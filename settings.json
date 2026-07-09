@@ -1,0 +1,12 @@
+{
+  "autoAccept": false,
+  "autoPick": {
+    "enabled": false,
+    "primaryChamp": 107,
+    "secondaryChamp": 950,
+    "champPool": [
+      517,
+      131
+    ]
+  }
+}
