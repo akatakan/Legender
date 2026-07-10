@@ -1,179 +1,274 @@
 package lcu
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"legender/internal/config"
 	"log"
 	"math/rand"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-// WAMP protokolü için gelen mesaj yapısı
-type WAMPMessage []interface{}
+const (
+	readyCheckEvent  = "OnJsonApiEvent_lol-matchmaking_v1_ready-check"
+	champSelectEvent = "OnJsonApiEvent_lol-champ-select_v1_session"
+)
 
-// LCU'dan gelen Ready Check (Maç Bulundu) verisi
-type ReadyCheckData struct {
-	State string `json:"state"`
+type AutoPickSettings struct {
+	Enabled        bool
+	PrimaryChamp   int
+	SecondaryChamp int
+	ChampPool      []int
 }
 
-// StartWebSocket, LCU'ya bağlanır ve eventleri dinlemeye başlar
-func (c *Client) StartWebSocket() {
-	url := fmt.Sprintf("wss://127.0.0.1:%s/", c.Port)
+type AutomationSettings struct {
+	AutoAccept bool
+	AutoPick   AutoPickSettings
+}
 
-	dialer := websocket.Dialer{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+type automationState struct {
+	handledActions map[string]struct{}
+}
+
+type eventEnvelope struct {
+	Data      json.RawMessage `json:"data"`
+	EventType string          `json:"eventType"`
+}
+
+type readyCheckData struct {
+	State          string `json:"state"`
+	PlayerResponse string `json:"playerResponse"`
+}
+
+type champSelectSession struct {
+	GameID int64 `json:"gameId"`
+	Timer  struct {
+		Phase string `json:"phase"`
+	} `json:"timer"`
+	LocalPlayerCellID int `json:"localPlayerCellId"`
+	Actions           [][]struct {
+		ID           int    `json:"id"`
+		ActorCellID  int    `json:"actorCellId"`
+		Type         string `json:"type"`
+		Completed    bool   `json:"completed"`
+		IsInProgress bool   `json:"isInProgress"`
+	} `json:"actions"`
+}
+
+// StartWebSocket bağlantı kopana kadar eventleri dinler ve geçici hatalarda
+// context iptal edilene kadar artan gecikmeyle yeniden bağlanır.
+func (c *Client) StartWebSocket(ctx context.Context, settings func() AutomationSettings) {
+	backoff := time.Second
+	for {
+		connectedAt := time.Now()
+		err := c.listenWebSocket(ctx, settings)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			log.Println("LCU WebSocket bağlantısı sona erdi:", err)
+		}
+
+		if time.Since(connectedAt) > 30*time.Second {
+			backoff = time.Second
+		}
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+
+		if backoff < 30*time.Second {
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+		}
 	}
+}
 
+func (c *Client) listenWebSocket(ctx context.Context, settings func() AutomationSettings) error {
+	dialer := websocket.Dialer{
+		HandshakeTimeout: lcuRequestTimeout,
+		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+	}
 	auth := base64.StdEncoding.EncodeToString([]byte("riot:" + c.Token))
 	headers := http.Header{"Authorization": []string{"Basic " + auth}}
+	url := fmt.Sprintf("wss://127.0.0.1:%s/", c.Port)
 
-	conn, _, err := dialer.Dial(url, headers)
+	conn, _, err := dialer.DialContext(ctx, url, headers)
 	if err != nil {
-		log.Println("WebSocket bağlantı hatası:", err)
-		return
+		return fmt.Errorf("bağlantı kurulamadı: %w", err)
 	}
 	defer conn.Close()
 
-	fmt.Println("✅ WebSocket Bağlantısı Kuruldu. Eventler dinleniyor...")
+	stopCloseWatcher := make(chan struct{})
+	defer close(stopCloseWatcher)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stopCloseWatcher:
+		}
+	}()
 
-	// 1. Sadece Maç Bulunma (ready-check) eventine abone oluyoruz
-	subscribeMsg := `[5, "OnJsonApiEvent_lol-matchmaking_v1_ready-check"]`
-	conn.WriteMessage(websocket.TextMessage, []byte(subscribeMsg))
+	for _, eventName := range []string{readyCheckEvent, champSelectEvent} {
+		subscription, err := json.Marshal([]any{5, eventName})
+		if err != nil {
+			return fmt.Errorf("%s aboneliği oluşturulamadı: %w", eventName, err)
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, subscription); err != nil {
+			return fmt.Errorf("%s aboneliği gönderilemedi: %w", eventName, err)
+		}
+	}
 
-	// 2. Sonsuz döngüde gelen mesajları dinliyoruz
+	log.Println("LCU WebSocket bağlantısı kuruldu; otomasyon eventleri dinleniyor")
+	state := &automationState{handledActions: make(map[string]struct{})}
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			log.Println("WebSocket koptu:", err)
-			break
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("event okunamadı: %w", err)
 		}
 
-		// Gelen mesajı WAMP formatına (JSON array) çevir
-		var msg WAMPMessage
-		if err := json.Unmarshal(message, &msg); err != nil {
-			continue
-		}
-
-		// WAMP Event mesajları 3 elemanlıdır: [8, "EventAdı", {Data}]
-		if len(msg) == 3 {
-			eventName, ok := msg[1].(string)
-			if ok && eventName == "OnJsonApiEvent_lol-matchmaking_v1_ready-check" {
-
-				// 1. Gelen payload bir obje (map) mi diye GÜVENLİ bir şekilde kontrol et
-				eventPayload, ok := msg[2].(map[string]interface{})
-				if !ok || eventPayload["data"] == nil {
-					continue // Data yoksa es geç, çökmesini engelle
-				}
-
-				// 2. Data'nın içini GÜVENLİ bir şekilde aç
-				dataField, ok := eventPayload["data"].(map[string]interface{})
-				if !ok {
-					continue
-				}
-
-				// 3. State ve PlayerResponse alanlarını güvenle al
-				state, _ := dataField["state"].(string)
-				playerResponse, _ := dataField["playerResponse"].(string)
-
-				// 4. Eğer durum InProgress ise, Toggle Açıksa ve BİZ HENÜZ KABUL ETMEDİYSEK:
-				if state == "InProgress" && config.AppSettings.AutoAccept && playerResponse == "None" {
-					fmt.Println("🚀 Maç bulundu! Otomatik kabul ediliyor...")
-					c.AcceptMatch()
-				}
-			}
-
-			if ok && eventName == "OnJsonApiEvent_lol-champ-select_v1_session" {
-
-				eventPayload, ok := msg[2].(map[string]interface{})
-				if !ok || eventPayload["data"] == nil {
-					continue
-				}
-
-				// Veriyi map'ler içinde kaybolmadan güvenle okumak için JSON'a çevirip kendi yapımıza aktarıyoruz
-				jsonData, _ := json.Marshal(eventPayload["data"])
-
-				var session struct {
-					Timer struct {
-						Phase string `json:"phase"`
-					} `json:"timer"`
-					LocalPlayerCellId int `json:"localPlayerCellId"`
-					Actions           [][]struct {
-						Id           int    `json:"id"`
-						ActorCellId  int    `json:"actorCellId"`
-						Type         string `json:"type"`
-						Completed    bool   `json:"completed"`
-						IsInProgress bool   `json:"isInProgress"`
-					} `json:"actions"`
-				}
-				json.Unmarshal(jsonData, &session)
-
-				// Eğer AutoPick kapalıysa veya seçim aşamasında değilsek hiçbir şey yapma
-				cfg := config.AppSettings.AutoPick
-				if !cfg.Enabled || session.Timer.Phase != "PLANNING" {
-					continue
-				}
-
-				// Sıranın bizde olup olmadığını buluyoruz
-				for _, actionGroup := range session.Actions {
-					for _, action := range actionGroup {
-						// Eğer sıra bizdeyse, işlem "pick" (seçim) ise ve henüz kilitlemediysek:
-						if action.ActorCellId == session.LocalPlayerCellId && action.Type == "pick" && action.IsInProgress && !action.Completed {
-
-							fmt.Println("⏳ Sıra bizde! 3 Aşamalı Seçim Algoritması başlıyor...")
-
-							// 1. O an seçilebilir olan şampiyonları API'den çek
-							pickableChamps, err := c.GetPickableChampions()
-							if err != nil {
-								continue
-							}
-
-							// Helper: Şampiyonun seçilebilir olup olmadığını kontrol eden küçük fonksiyon
-							isPickable := func(champId int) bool {
-								for _, id := range pickableChamps {
-									if id == champId {
-										return true
-									}
-								}
-								return false
-							}
-
-							var targetChamp int
-
-							// AŞAMA 1: Birincil Şampiyon
-							if isPickable(cfg.PrimaryChamp) {
-								targetChamp = cfg.PrimaryChamp
-								fmt.Println("-> Aşama 1: Birincil şampiyon seçilebilir durumda.")
-							} else if isPickable(cfg.SecondaryChamp) {
-								// AŞAMA 2: İkincil Şampiyon
-								targetChamp = cfg.SecondaryChamp
-								fmt.Println("-> Aşama 2: Birincil kapalı, İkincil şampiyon seçiliyor.")
-							} else if len(cfg.ChampPool) > 0 {
-								// AŞAMA 3: Rastgele Havuz
-								var validPool []int
-								for _, id := range cfg.ChampPool {
-									if isPickable(id) {
-										validPool = append(validPool, id)
-									}
-								}
-								if len(validPool) > 0 {
-									targetChamp = validPool[rand.Intn(len(validPool))]
-									fmt.Println("-> Aşama 3: Havuzdan rastgele bir şampiyon seçiliyor.")
-								}
-							}
-
-							// Eğer hedef şampiyon belirlendiyse, kilitle!
-							if targetChamp != 0 {
-								c.LockChampion(action.Id, targetChamp)
-							}
-						}
-					}
-				}
-			}
+		if err := c.handleWAMPMessage(ctx, message, settings(), state); err != nil {
+			log.Println("LCU otomasyon eventi işlenemedi:", err)
 		}
 	}
+}
+
+func (c *Client) handleWAMPMessage(ctx context.Context, message []byte, settings AutomationSettings, state *automationState) error {
+	var parts []json.RawMessage
+	if err := json.Unmarshal(message, &parts); err != nil {
+		return fmt.Errorf("WAMP mesajı çözülemedi: %w", err)
+	}
+	if len(parts) != 3 {
+		return nil
+	}
+
+	var messageType int
+	if err := json.Unmarshal(parts[0], &messageType); err != nil || messageType != 8 {
+		return nil
+	}
+	var eventName string
+	if err := json.Unmarshal(parts[1], &eventName); err != nil {
+		return fmt.Errorf("WAMP event adı çözülemedi: %w", err)
+	}
+	var envelope eventEnvelope
+	if err := json.Unmarshal(parts[2], &envelope); err != nil {
+		return fmt.Errorf("%s payload'u çözülemedi: %w", eventName, err)
+	}
+
+	switch eventName {
+	case readyCheckEvent:
+		return c.handleReadyCheck(ctx, envelope.Data, settings.AutoAccept)
+	case champSelectEvent:
+		if envelope.EventType == "Delete" {
+			state.handledActions = make(map[string]struct{})
+			return nil
+		}
+		return c.handleChampSelect(ctx, envelope.Data, settings.AutoPick, state)
+	default:
+		return nil
+	}
+}
+
+func (c *Client) handleReadyCheck(ctx context.Context, data json.RawMessage, autoAccept bool) error {
+	if !autoAccept || len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	var readyCheck readyCheckData
+	if err := json.Unmarshal(data, &readyCheck); err != nil {
+		return fmt.Errorf("ready-check verisi çözülemedi: %w", err)
+	}
+	if readyCheck.State != "InProgress" || readyCheck.PlayerResponse != "None" {
+		return nil
+	}
+	if err := c.AcceptMatch(ctx); err != nil {
+		return fmt.Errorf("maç otomatik kabul edilemedi: %w", err)
+	}
+	log.Println("Maç otomatik kabul edildi")
+	return nil
+}
+
+func (c *Client) handleChampSelect(ctx context.Context, data json.RawMessage, cfg AutoPickSettings, state *automationState) error {
+	if !cfg.Enabled || len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	var session champSelectSession
+	if err := json.Unmarshal(data, &session); err != nil {
+		return fmt.Errorf("champ-select verisi çözülemedi: %w", err)
+	}
+	if session.Timer.Phase != "BAN_PICK" {
+		return nil
+	}
+
+	for _, actionGroup := range session.Actions {
+		for _, action := range actionGroup {
+			if action.ActorCellID != session.LocalPlayerCellID || action.Type != "pick" || !action.IsInProgress || action.Completed {
+				continue
+			}
+
+			actionKey := fmt.Sprintf("%d:%d", session.GameID, action.ID)
+			if _, handled := state.handledActions[actionKey]; handled {
+				return nil
+			}
+
+			pickable, err := c.GetPickableChampions(ctx)
+			if err != nil {
+				return err
+			}
+			championID := chooseChampion(cfg, pickable, rand.Intn)
+			if championID == 0 {
+				return errors.New("yapılandırılmış seçilebilir şampiyon bulunamadı")
+			}
+			if err := c.LockChampion(ctx, action.ID, championID); err != nil {
+				return fmt.Errorf("%d ID'li şampiyon kilitlenemedi: %w", championID, err)
+			}
+			state.handledActions[actionKey] = struct{}{}
+			log.Printf("%d ID'li şampiyon otomatik kilitlendi", championID)
+			return nil
+		}
+	}
+	return nil
+}
+
+func chooseChampion(cfg AutoPickSettings, pickable []int, randomIndex func(int) int) int {
+	pickableSet := make(map[int]struct{}, len(pickable))
+	for _, id := range pickable {
+		pickableSet[id] = struct{}{}
+	}
+
+	if cfg.PrimaryChamp != 0 {
+		if _, ok := pickableSet[cfg.PrimaryChamp]; ok {
+			return cfg.PrimaryChamp
+		}
+	}
+	if cfg.SecondaryChamp != 0 {
+		if _, ok := pickableSet[cfg.SecondaryChamp]; ok {
+			return cfg.SecondaryChamp
+		}
+	}
+
+	validPool := make([]int, 0, len(cfg.ChampPool))
+	for _, id := range cfg.ChampPool {
+		if _, ok := pickableSet[id]; ok {
+			validPool = append(validPool, id)
+		}
+	}
+	if len(validPool) == 0 {
+		return 0
+	}
+	return validPool[randomIndex(len(validPool))]
 }

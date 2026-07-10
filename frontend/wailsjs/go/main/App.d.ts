@@ -3,6 +3,8 @@
 import {main} from '../models';
 import {config} from '../models';
 
+export function ExportDiagnostics():Promise<string>;
+
 export function GetLCUData():Promise<main.LCUResponse>;
 
 export function GetSettings():Promise<config.Settings>;

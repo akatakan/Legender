@@ -1,4 +1,4 @@
-import { GetLCUData, ToggleAutoAccept, GetSettings, SaveAutoPickSettings } from '../../wailsjs/go/main/App';
+import { ExportDiagnostics, GetLCUData, ToggleAutoAccept, GetSettings, SaveAutoPickSettings } from '../../wailsjs/go/main/App';
 import { main,config } from '../../wailsjs/go/models';
 
 export const fetchLCUConnection = async (): Promise<main.LCUResponse> => {
@@ -16,3 +16,5 @@ export const fetchSettings = async (): Promise<config.Settings> => {
 export const updateAutoPickSettings = async (cfg: config.AutoPickSettings): Promise<void> => {
     await SaveAutoPickSettings(cfg);
 };
+
+export const exportDiagnostics = async (): Promise<string> => ExportDiagnostics();

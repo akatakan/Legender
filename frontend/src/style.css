@@ -1,5 +1,246 @@
 @import "tailwindcss";
 
-body {
-  @apply bg-gray-900 text-white;
+@font-face {
+  font-family: "Nunito";
+  src: url("./assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: dark;
+  font-family: "Nunito", "Segoe UI", sans-serif;
+  background: #0d1117;
+  color: #e8ebf0;
+  text-rendering: optimizeLegibility;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid #c8a24a;
+  outline-offset: 2px;
+}
+
+::selection {
+  background: #c8a24a;
+  color: #101318;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0d1117;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid #0d1117;
+  border-radius: 999px;
+  background: #35404d;
+}
+
+.window-drag {
+  --wails-draggable: drag;
+}
+
+.window-no-drag,
+.window-control {
+  --wails-draggable: no-drag;
+}
+
+.window-control {
+  display: grid;
+  width: 46px;
+  place-items: center;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #8f9aaa;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.window-control:hover {
+  background: #222a34;
+  color: #f2f4f7;
+}
+
+.window-control-close:hover {
+  background: #c8424e;
+  color: white;
+}
+
+.window-control svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: square;
+  stroke-width: 1.2;
+}
+
+.flat-panel {
+  overflow: hidden;
+  border: 1px solid #28313d;
+  border-radius: 10px;
+  background: #151a22;
+}
+
+.flat-button {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.flat-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
+.flat-button-secondary {
+  border-color: #35404d;
+  background: #191f28;
+  color: #cbd1da;
+}
+
+.flat-button-secondary:hover:not(:disabled) {
+  border-color: #4a5665;
+  background: #202731;
+  color: white;
+}
+
+.flat-button-secondary:disabled {
+  color: #687383;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 999px;
+  padding: 6px 9px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.status-badge-online {
+  background: #173528;
+  color: #52d49a;
+}
+
+.status-badge-offline {
+  background: #202630;
+  color: #828d9d;
+}
+
+.metadata-chip {
+  border: 1px solid #303a47;
+  border-radius: 6px;
+  background: #11161d;
+  padding: 5px 8px;
+}
+
+.flat-toggle {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex: none;
+  border: 1px solid #3b4654;
+  border-radius: 999px;
+  background: #242c36;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.flat-toggle span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #9ba5b3;
+  transition: transform 150ms ease, background-color 150ms ease;
+}
+
+.flat-toggle-enabled {
+  border-color: #c8a24a;
+  background: #c8a24a;
+}
+
+.flat-toggle-enabled span {
+  transform: translateX(16px);
+  background: #111318;
+}
+
+.selection-row {
+  display: flex;
+  width: 100%;
+  min-height: 46px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #2d3743;
+  border-radius: 8px;
+  background: #11161d;
+  padding: 6px 10px;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.selection-row:hover {
+  border-color: #465262;
+  background: #181e26;
+}
+
+.selection-row svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

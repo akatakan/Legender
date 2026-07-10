@@ -19,6 +19,7 @@ export namespace config {
 	    }
 	}
 	export class Settings {
+	    schemaVersion: number;
 	    autoAccept: boolean;
 	    autoPick: AutoPickSettings;
 	
@@ -28,6 +29,7 @@ export namespace config {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schemaVersion = source["schemaVersion"];
 	        this.autoAccept = source["autoAccept"];
 	        this.autoPick = this.convertValues(source["autoPick"], AutoPickSettings);
 	    }
@@ -79,6 +81,8 @@ export namespace main {
 	export class LCUResponse {
 	    isActive: boolean;
 	    port: string;
+	    locale: string;
+	    gameVersion: string;
 	    summoner?: lcu.SummonerInfo;
 	
 	    static createFrom(source: any = {}) {
@@ -89,6 +93,8 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.isActive = source["isActive"];
 	        this.port = source["port"];
+	        this.locale = source["locale"];
+	        this.gameVersion = source["gameVersion"];
 	        this.summoner = this.convertValues(source["summoner"], lcu.SummonerInfo);
 	    }
 	
